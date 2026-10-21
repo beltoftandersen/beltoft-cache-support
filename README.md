@@ -209,6 +209,36 @@ And in a browser: add a product to the cart and browse. Pages should stay HIT (c
 while the header shows the right count and subtotal. If a WooCommerce login form appears on cached pages, log in from it with the cart still
 full: it must work (see the login nonce note under "For other code").
 
+## Forms and nonces on cached pages
+
+A cached page contains the security tokens (nonces) of the visitor it was rendered for: an anonymous one. How that
+plays out:
+
+- **Bricks forms.** The form token (`bricksData.formNonce`, action `bricks-nonce-form`) is in the cached HTML. It
+  stays valid for anonymous visitors **and** for shoppers with a cart. WooCommerce re-scopes only nonces whose
+  action starts with `woocommerce` to the cart session, so Bricks' tokens aren't affected. Two things keep forms
+  working:
+  - **Age.** WordPress nonces live 12–24 hours, and `fastcgi_cache_valid 200 12h` keeps a cached token inside
+    that window.
+  - **Bricks' own retry** (Bricks 1.9.6+). If a submission comes back `invalid_nonce`, Bricks fetches a fresh token
+    from `admin-ajax.php?action=bricks_regenerate_form_nonce` and resubmits once. The visitor notices nothing.
+  - So: keep `/wp-admin/admin-ajax.php` reachable for guests (outside any login or auth gate) and uncached. The
+    URI skip map and the GET-only rule already exclude it from the cache.
+  - Most "caching broke our Bricks forms" reports come from Bricks older than 1.9.6, a cache lifetime longer than
+    the nonce's, or `admin-ajax.php` being blocked.
+- **Bricks AJAX query filters and pagination.** Same pattern: Bricks refreshes `bricks-nonce` and the REST nonce
+  through `bricks_regenerate_query_nonce` when they fail.
+- **WooCommerce login forms.** These are the exception, because their nonce *is* re-scoped to the cart session,
+  and nothing retries it. See the login-nonce route above. Keep WooCommerce login on uncached pages (My Account,
+  checkout) or add the nonce fetch.
+- **Logged-in visitors** never get or create cached pages, so their nonces are always their own.
+
+Check a site with a form on a cached page:
+
+```bash
+curl -s -X POST https://example.com/wp-admin/admin-ajax.php -d action=bricks_regenerate_form_nonce   # 200 and a 10-character token
+```
+
 ## Commands
 
 ```bash
@@ -253,6 +283,7 @@ Header markup:
 | `X-Cache` is always MISS | The response sets a cookie (`$upstream_http_set_cookie`). Find the plugin or theme that sets one on every page. |
 | Header shows 0 items on a cached page with a full cart | The badge isn't in a painted target: register it with `beltoft_cache_count_badges`, or use `span.cart-count`. |
 | Login on a cached page just reloads for shoppers | The form posts the cached nonce. Add the nonce fetch (see "For other code"), and make sure `/wp-json/beltoft/v1/login-nonce` reaches PHP uncached. |
+| A Bricks form says "Invalid form token" / "Token de formulário inválido" | `admin-ajax.php` is blocked for guests (auth gate, firewall) or cached, so Bricks' retry can't fetch a fresh token. Or Bricks is older than 1.9.6. |
 | Warm-ups fail, `Warm` never grows | The server can't fetch its own HTTPS URLs, or a firewall or bot filter blocks it. |
 | Scheduled emails go out slowly after purges | The dedicated sweep runner (step 5) is missing. |
 
